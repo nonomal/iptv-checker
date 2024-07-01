@@ -1,0 +1,116 @@
+name: Desktop
+
+on:
+  push:
+    tags:
+      - "d*"
+  workflow_dispatch: # or just on button clicked
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-latest, windows-latest, ubuntu-latest ]
+        include:
+          - os: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+            target: 'aarch64-apple-darwin'
+          - os: 'windows-latest'
+            args: '--target aarch64-pc-windows-msvc'
+            target: 'aarch64-pc-windows-msvc'
+            aarch64: true
+          - os: 'windows-latest'
+            args: '--target x86_64-pc-windows-msvc'
+            target: 'x86_64-pc-windows-msvc'
+            x86_64: true
+          - os: 'ubuntu-latest'
+            args: '--target aarch64-unknown-linux-gnu'
+            target: 'aarch64-unknown-linux-gnu'
+            aarch64: true
+          - os: 'ubuntu-latest'
+            args: '--target x86_64-unknown-linux-gnu'
+            target: 'x86_64-unknown-linux-gnu'
+            x86_64: true
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: setup node
+        uses: actions/setup-node@v1
+        with:
+          node-version: 18
+      
+      - name: Checkout iptv-checker-web
+        uses: actions/checkout@v4
+        with:
+          repository: zhimin-dev/iptv-checker-web
+          path: iptv-checker-web
+
+      - name: install Rust stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: install webkit2gtk (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y webkit2gtk-4.0
+      - name: install app dependencies and build it
+        working-directory: ./iptv-checker-web
+        run: yarn && yarn build
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.args }}
+
+      - name: Build archive
+        shell: bash
+        working-directory: ./iptv-checker-web
+        run: |
+          binaryName="iptv-checker-desktop"
+          gitTagName="${{github.ref_name}}"
+          echo $gitTagName
+          tagVersion=${gitTagName//d/}
+          version=$(echo $tagVersion | cut -d '.' -f 1-3)
+          echo $version
+          dirname="${binaryName}_${version}-${{ matrix.target }}"
+          filename="${binaryName}_${version}_"
+          echo $dirname
+          mkdir "$dirname"
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            suffix="aarch64"
+            realName="${filename}${suffix}"
+            echo $(realName)
+            mv "src-tauri/target/${{ matrix.target }}/release/bundle/dmg/${realName}.dmg" "$dirname/"
+          elif [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            suffix="amd64"
+            if ["${{matrix.target}}" = "aarch64-unknown-linux-gnu"]; then
+              suffix="aarch64"
+            fi
+            realName="${filename}${suffix}"
+            echo $(realName)
+            mv "src-tauri/target/${{ matrix.target }}/release/bundle/deb/${realName}.deb" "$dirname/"
+          elif [ "${{ matrix.os }}" = "windows-latest" ]; then
+            suffix="x64-setup"
+            realName="${filename}${suffix}"
+            echo $(realName)
+            mv "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/${realName}.exe" "$dirname/"
+          fi
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a "$dirname.zip" "$dirname"
+            echo "ASSET=$dirname.zip" >> $GITHUB_ENV
+          else
+            tar -czf "$dirname.tar.gz" "$dirname"
+            echo "ASSET=$dirname.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./iptv-checker-web/${{ env.ASSET }}
